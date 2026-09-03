@@ -1,12 +1,15 @@
 //! Linux file objects
 
-mod devfs;
+pub mod devfs;
+mod dmabuf;
 mod file;
 mod ioctl;
 mod pipe;
 mod pseudo;
 pub mod rcore_fs_wrapper;
 mod stdio;
+mod syncobj_file;
+mod sysfs;
 
 #[cfg(feature = "mock-disk")]
 pub mod mock;
@@ -45,10 +48,29 @@ use crate::process::LinuxProcess;
 use devfs::RandomINode;
 use pseudo::Pseudo;
 
+pub use dmabuf::DmaBuf;
 pub use file::{File, OpenFlags, PollEvents, SeekFrom};
 pub use pipe::Pipe;
 pub use rcore_fs::vfs::{self, PollStatus};
 pub use stdio::{STDIN, STDOUT};
+pub use syncobj_file::SyncobjHandle;
+
+/// If `f` is a DRM-related fd, return a short description.
+pub fn drm_fd_desc(f: &alloc::sync::Arc<dyn FileLike>) -> Option<alloc::string::String> {
+    if f.downcast_ref::<DmaBuf>().is_some() {
+        return Some(alloc::string::String::from("dmabuf"));
+    }
+    if let Some(s) = f.downcast_ref::<SyncobjHandle>() {
+        return Some(alloc::format!("syncobj(handle={})", s.handle));
+    }
+    if let Some(file) = f.downcast_ref::<File>() {
+        let p = file.path();
+        if p.starts_with("/dev/dri") {
+            return Some(p.clone());
+        }
+    }
+    None
+}
 
 #[async_trait]
 /// Generic file interface
@@ -74,6 +96,10 @@ pub trait FileLike: KernelObject {
     /// write from buffer at given offset
     fn write_at(&self, _offset: u64, _buf: &[u8]) -> LxResult<usize> {
         Err(LxError::ENOSYS)
+    }
+    /// Reposition read/write file offset (default: ESPIPE for non-seekable streams).
+    fn seek(&self, _pos: SeekFrom) -> LxResult<u64> {
+        Err(LxError::ESPIPE)
     }
     /// wait for some event on a file descriptor
     fn poll(&self, events: PollEvents) -> LxResult<PollStatus>;
@@ -136,8 +162,13 @@ impl From<FileDesc> for i32 {
     }
 }
 
+fn drm_release_on_exit(pid: u64) {
+    devfs::drm::release_process(pid);
+}
+
 /// create root filesystem, mount DevFS and RamFS
 pub fn create_root_fs(rootfs: Arc<dyn FileSystem>) -> Arc<dyn INode> {
+    zircon_object::task::set_process_exit_hook(drm_release_on_exit);
     let rootfs = MountFS::new(rootfs);
     let root = rootfs.mountpoint_root_inode();
 
@@ -188,6 +219,31 @@ pub fn create_root_fs(rootfs: Arc<dyn FileSystem>) -> Arc<dyn INode> {
         }
     }
 
+    // Register DRM drivers from kernel-hal
+    for drm in drivers::all_drm().as_vec().iter() {
+        devfs::drm::register_driver(drm.clone());
+    }
+
+    let have_drm = !drivers::all_drm().as_vec().is_empty();
+    let have_display = drivers::all_display().first().is_some();
+    if have_drm || have_display {
+        sysfs::log_drm_pci_backing();
+        if let Ok(dri_dev) = devfs_root.add_dir("dri") {
+            if let Err(e) = dri_dev.add("card0", Arc::new(devfs::DrmDev::new(0))) {
+                warn!("failed to mknod /dev/dri/card0: {:?}", e);
+            } else {
+                debug!("[drm] /dev/dri/card0 created (sw_kms path available)");
+            }
+            if let Err(e) = dri_dev.add("renderD128", Arc::new(devfs::DrmDev::new(128))) {
+                warn!("failed to mknod /dev/dri/renderD128: {:?}", e);
+            } else {
+                debug!("[drm] /dev/dri/renderD128 created (render node)");
+            }
+        } else {
+            warn!("failed to mkdir /dev/dri");
+        }
+    }
+
     // Add uart devices at `/dev/ttyS{i}`
     for (i, uart) in drivers::all_uart().as_vec().iter().enumerate() {
         let fname = format!("ttyS{}", i);
@@ -202,6 +258,15 @@ pub fn create_root_fs(rootfs: Arc<dyn FileSystem>) -> Arc<dyn INode> {
             .expect("failed to mkdir /dev")
     });
     dev.mount(devfs).expect("failed to mount DevFS");
+
+    // mount SysFS at /sys
+    let sys = root.find(true, "sys").unwrap_or_else(|_| {
+        root.create("sys", FileType::Dir, 0o555)
+            .expect("failed to mkdir /sys")
+    });
+    if let Err(e) = sys.mount(Arc::new(sysfs::SysFS::new())) {
+        warn!("failed to mount SysFS: {:?}", e);
+    }
 
     // mount RamFS at /tmp
     let ramfs = RamFS::new();
@@ -264,6 +329,12 @@ impl LinuxProcess {
                 &self.execute_path(),
                 FileType::SymLink,
             )));
+        }
+        let follow_max_depth = if follow { FOLLOW_MAX_DEPTH } else { 0 };
+        if path.starts_with("/sys") {
+            if let Ok(inode) = sysfs::lookup_path(path, follow_max_depth) {
+                return Ok(inode);
+            }
         }
         let (fd_dir_path, fd_name) = split_path(path);
         if fd_dir_path == "/proc/self/fd" {

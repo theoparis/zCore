@@ -131,7 +131,13 @@ impl FileInner {
                 match self.inode.read_at(offset as usize, buf) {
                     Ok(read_len) => return Ok(read_len),
                     Err(FsError::Again) => {
-                        self.inode.async_poll().await?;
+                        use super::devfs::DrmDev;
+                        if self.inode.downcast_ref::<DrmDev>().is_some() {
+                            let bus = super::devfs::drm::get_eventbus();
+                            crate::sync::wait_for_event(bus, crate::sync::Event::READABLE).await;
+                        } else {
+                            self.inode.async_poll().await?;
+                        }
                     }
                     Err(err) => return Err(err.into()),
                 }
@@ -286,7 +292,25 @@ impl FileLike for File {
     }
 
     async fn async_poll(&self, _events: PollEvents) -> LxResult<PollStatus> {
-        Ok(self.inner.read().inode.async_poll().await?)
+        let inode = self.inner.read().inode.clone();
+        use super::devfs::DrmDev;
+        if let Some(drmdev) = inode.downcast_ref::<DrmDev>() {
+            let want_read = _events.contains(PollEvents::IN);
+            let want_write = _events.contains(PollEvents::OUT);
+            let status = drmdev.poll()?;
+            let ready = (want_read && status.read)
+                || (want_write && status.write)
+                || (!want_read && !want_write);
+            if ready {
+                return Ok(status);
+            }
+            return Ok(inode.async_poll().await?);
+        }
+        Ok(inode.async_poll().await?)
+    }
+
+    fn seek(&self, pos: SeekFrom) -> LxResult<u64> {
+        File::seek(self, pos)
     }
 
     fn ioctl(&self, request: usize, arg1: usize, _arg2: usize, _arg3: usize) -> LxResult<usize> {
@@ -308,9 +332,11 @@ impl FileLike for File {
                 Ok(vmo)
             }
             FileType::CharDevice => {
-                use super::devfs::FbDev;
+                use super::devfs::{DrmDev, FbDev};
                 if let Some(fbdev) = inner.inode.downcast_ref::<FbDev>() {
                     fbdev.get_vmo(offset, len)
+                } else if let Some(drmdev) = inner.inode.downcast_ref::<DrmDev>() {
+                    drmdev.get_vmo(offset, len).map_err(Into::into)
                 } else {
                     Err(LxError::ENOSYS)
                 }
