@@ -1,7 +1,11 @@
 use crate::hal_fn::mem::phys_to_virt;
 use crate::imp::config::*;
 use crate::sync::Mutex;
-use crate::utils::page_table::{GenericPTE, PageTableImpl, PageTableLevel4};
+#[cfg(any(feature = "page-16k", feature = "page-64k"))]
+use crate::utils::page_table::PageTableLevel3;
+#[cfg(not(any(feature = "page-16k", feature = "page-64k")))]
+use crate::utils::page_table::PageTableLevel4;
+use crate::utils::page_table::{GenericPTE, PageTableImpl};
 use crate::MMUFlags;
 use crate::{PhysAddr, VirtAddr, KCONFIG};
 use core::fmt::{Debug, Formatter, Result};
@@ -30,10 +34,16 @@ fn init_kernel_page_table() -> PagingResult<PageTable> {
 
     let mut pt = PageTable::new();
     let mut map_range = |start: VirtAddr, end: VirtAddr, flags: MMUFlags| -> PagingResult {
+        let aligned_start = crate::addr::align_down(start);
+        let aligned_end = crate::addr::align_up(end);
+        let size = aligned_end - aligned_start;
+        if size == 0 {
+            return Ok(());
+        }
         pt.map_cont(
-            crate::addr::align_down(start),
-            crate::addr::align_up(end - start),
-            start - KCONFIG.phys_to_virt_offset,
+            aligned_start,
+            size,
+            aligned_start - KCONFIG.phys_to_virt_offset,
             flags,
         )
     };
@@ -101,7 +111,6 @@ fn init_kernel_page_table() -> PagingResult<PageTable> {
 
 pub fn init() {
     let mut pt = KERNEL_PT.lock();
-    info!("initialized kernel page table @ {:#x}", pt.table_phys());
     unsafe {
         pt.activate();
         TTBR0_EL1.set(0);
@@ -131,6 +140,21 @@ hal_fn_impl! {
             } else {
                 TTBR1_EL1.set(vmtoken as _);
             }
+            unsafe {
+                #[cfg(feature = "page-16k")]
+                {
+                    core::arch::asm!("msr tcr_el1, {0}", in(reg) 0x2_7511_b511u64);
+                }
+                #[cfg(feature = "page-64k")]
+                {
+                    core::arch::asm!("msr tcr_el1, {0}", in(reg) 0x2_f510_7510u64);
+                }
+                #[cfg(not(any(feature = "page-16k", feature = "page-64k")))]
+                {
+                    core::arch::asm!("msr tcr_el1, {0}", in(reg) 0x2_b510_3510u64);
+                }
+                core::arch::asm!("isb");
+            }
             flush_tlb_all();
         }
 
@@ -148,7 +172,7 @@ hal_fn_impl! {
                         tlbi vaae1is, {0}
                         dsb ish
                         isb",
-                        in(reg) vaddr >> 12
+                        in(reg) vaddr >> crate::PAGE_SIZE_LOG2
                     );
                 }
             } else {
@@ -157,9 +181,10 @@ hal_fn_impl! {
         }
 
         fn pt_clone_kernel_space(dst_pt_root: PhysAddr, src_pt_root: PhysAddr) {
-            let entry_range = 0x100..0x200;  // 0xffff_0000_8000_0000..0xffff_0000_c000_0000
-            let dst_table = unsafe { core::slice::from_raw_parts_mut(phys_to_virt(dst_pt_root) as *mut AARCH64PTE, 512) };
-            let src_table = unsafe { core::slice::from_raw_parts(phys_to_virt(src_pt_root) as *const AARCH64PTE, 512) };
+            let entry_count = crate::PAGE_SIZE / core::mem::size_of::<usize>();
+            let entry_range = (entry_count / 2)..entry_count;
+            let dst_table = unsafe { core::slice::from_raw_parts_mut(phys_to_virt(dst_pt_root) as *mut AARCH64PTE, entry_count) };
+            let src_table = unsafe { core::slice::from_raw_parts(phys_to_virt(src_pt_root) as *const AARCH64PTE, entry_count) };
             for i in entry_range {
                 dst_table[i] = src_table[i];
                 if dst_table[i].is_unused() {
@@ -294,7 +319,7 @@ impl From<PTF> for MMUFlags {
             if !f.contains(PTF::UXN) {
                 ret |= Self::EXECUTE;
             }
-        } else if f.intersects(PTF::PXN) {
+        } else if !f.intersects(PTF::PXN) {
             ret |= Self::EXECUTE;
         }
         if f.mem_type() == MemType::Device {
@@ -352,5 +377,7 @@ impl Debug for AARCH64PTE {
     }
 }
 
-/// Sv48: Page-Based 48-bit Virtual-Memory System.
+#[cfg(not(any(feature = "page-16k", feature = "page-64k")))]
 pub type PageTable = PageTableImpl<PageTableLevel4, AARCH64PTE>;
+#[cfg(any(feature = "page-16k", feature = "page-64k"))]
+pub type PageTable = PageTableImpl<PageTableLevel3, AARCH64PTE>;

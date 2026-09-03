@@ -1,5 +1,7 @@
 use crate::sync::Mutex;
-use crate::{common::vm::*, mem::PhysFrame, MMUFlags, PhysAddr, VirtAddr};
+use crate::{
+    common::vm::*, mem::PhysFrame, MMUFlags, PhysAddr, VirtAddr, PAGE_SIZE, PAGE_SIZE_LOG2,
+};
 use alloc::vec::Vec;
 use core::{fmt::Debug, marker::PhantomData, slice};
 
@@ -79,18 +81,18 @@ impl<L: PageTableLevel, PTE: GenericPTE> PageTableImpl<L, PTE> {
 
         let p3e = &mut p3[p3_index(vaddr)];
         if p3e.is_leaf() {
-            return Ok((p3e, PageSize::Size1G));
+            return Ok((p3e, PageSize::HUGE_L3));
         }
 
         let p2 = next_table_mut(p3e)?;
         let p2e = &mut p2[p2_index(vaddr)];
         if p2e.is_leaf() {
-            return Ok((p2e, PageSize::Size2M));
+            return Ok((p2e, PageSize::HUGE_L2));
         }
 
         let p1 = next_table_mut(p2e)?;
         let p1e = &mut p1[p1_index(vaddr)];
-        Ok((p1e, PageSize::Size4K))
+        Ok((p1e, PageSize::BASE))
     }
 
     fn get_entry_mut_or_create(&mut self, page: Page) -> PagingResult<&mut PTE> {
@@ -106,13 +108,13 @@ impl<L: PageTableLevel, PTE: GenericPTE> PageTableImpl<L, PTE> {
         };
 
         let p3e = &mut p3[p3_index(vaddr)];
-        if page.size == PageSize::Size1G {
+        if page.size == PageSize::HUGE_L3 {
             return Ok(p3e);
         }
 
         let p2 = next_table_mut_or_create(p3e, || self.alloc_intrm_table())?;
         let p2e = &mut p2[p2_index(vaddr)];
-        if page.size == PageSize::Size2M {
+        if page.size == PageSize::HUGE_L2 {
             return Ok(p2e);
         }
 
@@ -131,10 +133,10 @@ impl<L: PageTableLevel, PTE: GenericPTE> PageTableImpl<L, PTE> {
     ) {
         let mut n = 0;
         for (i, entry) in table.iter().enumerate() {
-            let vaddr = start_vaddr + (i << (12 + (3 - level) * 9));
+            let vaddr = start_vaddr + (i << (PAGE_SIZE_LOG2 + (L::LEVEL - 1 - level) * INDEX_BITS));
             if entry.is_present() {
                 func(level, i, vaddr, entry);
-                if level < 3 && !entry.is_leaf() {
+                if level < L::LEVEL - 1 && !entry.is_leaf() {
                     let table_entry = next_table_mut(entry).unwrap();
                     self.walk(table_entry, level + 1, vaddr, limit, func);
                 }
@@ -274,22 +276,23 @@ impl<L: PageTableLevel, PTE: GenericPTE> GenericPageTable for PageTableImpl<L, P
     }
 }
 
-const ENTRY_COUNT: usize = 512;
+const ENTRY_COUNT: usize = PAGE_SIZE / core::mem::size_of::<usize>();
+const INDEX_BITS: usize = ENTRY_COUNT.trailing_zeros() as usize;
 
 const fn p4_index(vaddr: usize) -> usize {
-    (vaddr >> (12 + 27)) & (ENTRY_COUNT - 1)
+    (vaddr >> (PAGE_SIZE_LOG2 + 3 * INDEX_BITS)) & (ENTRY_COUNT - 1)
 }
 
 const fn p3_index(vaddr: usize) -> usize {
-    (vaddr >> (12 + 18)) & (ENTRY_COUNT - 1)
+    (vaddr >> (PAGE_SIZE_LOG2 + 2 * INDEX_BITS)) & (ENTRY_COUNT - 1)
 }
 
 const fn p2_index(vaddr: usize) -> usize {
-    (vaddr >> (12 + 9)) & (ENTRY_COUNT - 1)
+    (vaddr >> (PAGE_SIZE_LOG2 + INDEX_BITS)) & (ENTRY_COUNT - 1)
 }
 
 const fn p1_index(vaddr: usize) -> usize {
-    (vaddr >> 12) & (ENTRY_COUNT - 1)
+    (vaddr >> PAGE_SIZE_LOG2) & (ENTRY_COUNT - 1)
 }
 
 fn table_of<'a, E>(paddr: PhysAddr) -> &'a [E] {
