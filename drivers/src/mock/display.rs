@@ -12,9 +12,11 @@ impl MockDisplay {
     pub fn new(width: u32, height: u32, format: ColorFormat) -> Self {
         let fb_size = (width * height * format.bytes() as u32) as usize;
         let fb = vec![0; fb_size];
+        let pitch = width * format.bytes() as u32;
         let info = DisplayInfo {
             width,
             height,
+            pitch,
             format,
             fb_base_vaddr: fb.as_ptr() as usize,
             fb_size,
@@ -35,9 +37,11 @@ impl MockDisplay {
         unsafe {
             let fb_size = (width * height * format.bytes() as u32) as usize;
             let fb = Vec::from_raw_parts(ptr, fb_size, fb_size);
+            let pitch = width * format.bytes() as u32;
             let info = DisplayInfo {
                 width,
                 height,
+                pitch,
                 format,
                 fb_base_vaddr: fb.as_ptr() as usize,
                 fb_size,

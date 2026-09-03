@@ -294,7 +294,275 @@ impl Syscall<'_> {
         );
         let proc = self.linux_process();
         let file_like = proc.get_file_like(fd)?;
+        let cmd = request & 0xFFFF_FFFF;
+        if (cmd >> 8) & 0xFF == 0x64 {
+            if let Some(ret) = self.sys_drm_prime(&file_like, cmd, arg1)? {
+                return Ok(ret);
+            }
+            if let Some(ret) = self.sys_drm_syncobj_fd(cmd, arg1)? {
+                return Ok(ret);
+            }
+        }
         file_like.ioctl(request, arg1, arg2, arg3)
+    }
+
+    /// DRM ioctls that must install / look up a process fd (PRIME dma-buf
+    /// export-import, and CREATE_LEASE) — the inode-level DRM `io_control`
+    /// cannot touch the fd table. Returns `Ok(Some(0))` if handled, `Ok(None)`
+    /// if `fd` is not a DRM device (fall through to the normal ioctl path).
+    fn sys_drm_prime(
+        &self,
+        file_like: &alloc::sync::Arc<dyn linux_object::fs::FileLike>,
+        request: usize,
+        arg1: usize,
+    ) -> Result<Option<usize>, LxError> {
+        use linux_object::fs::devfs::drm;
+        use linux_object::fs::DmaBuf;
+
+        const PRIME_HANDLE_TO_FD: usize = 0xC00C_642E; // DRM_IOWR(0x2e, drm_prime_handle)
+        const PRIME_FD_TO_HANDLE: usize = 0xC00C_642D; // DRM_IOWR(0x2d, drm_prime_handle)
+        const MODE_CREATE_LEASE: usize = 0xC018_64C6;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Default)]
+        struct DrmPrimeHandle {
+            handle: u32,
+            flags: u32,
+            fd: i32,
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Default)]
+        struct DrmModeCreateLease {
+            object_ids: u64,
+            object_count: u32,
+            flags: u32,
+            lessee_id: u32,
+            fd: i32,
+        }
+
+        let proc = self.linux_process();
+        match request {
+            PRIME_HANDLE_TO_FD | PRIME_FD_TO_HANDLE => {
+                let mut ptr = UserInOutPtr::<DrmPrimeHandle>::from(arg1);
+                let mut h = match ptr.read() {
+                    Ok(h) => h,
+                    Err(e) => {
+                        warn!("[drm] PRIME read(args @ {:#x}) EFAULT: {:?}", arg1, e);
+                        return Err(e.into());
+                    }
+                };
+                let is_export = h.fd < 0;
+                if is_export {
+                    let (phys, size, vmo) = match drm::export_handle(h.handle) {
+                        Some(v) => v,
+                        None => {
+                            warn!(
+                                "[drm] PRIME export EINVAL: handle={} not in GEM table",
+                                h.handle
+                            );
+                            return Err(LxError::EINVAL);
+                        }
+                    };
+                    let dmabuf = DmaBuf::new(phys, size, vmo);
+                    let new_fd = match proc.add_file(dmabuf) {
+                        Ok(fd) => fd,
+                        Err(e) => {
+                            warn!("[drm] PRIME export add_file {:?}", e);
+                            return Err(e);
+                        }
+                    };
+                    h.fd = i32::from(new_fd);
+                    log::debug!(
+                        "[drm] PRIME export handle={:#x} -> phys={:#x} size={} fd={}",
+                        h.handle,
+                        phys,
+                        size,
+                        h.fd
+                    );
+                    if let Err(e) = ptr.write(h) {
+                        warn!("[drm] PRIME export write-back EFAULT: {:?}", e);
+                        return Err(e.into());
+                    }
+                    Ok(Some(0))
+                } else {
+                    let target = match proc.get_file_like(FileDesc::from(h.fd as usize)) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            warn!("[drm] PRIME import EBADF: fd={} not in fd table", h.fd);
+                            return Err(e);
+                        }
+                    };
+                    let dmabuf = target.downcast_ref::<DmaBuf>().ok_or(LxError::EINVAL)?;
+                    let (handle_id, kind) = match drm::nouveau_handle_for_phys(dmabuf.phys_addr) {
+                        Some(nouveau_handle) => {
+                            let n = drm::nouveau_gem_add_ref(nouveau_handle);
+                            log::debug!(
+                                "[drm] PRIME self-import ref++ handle={:#x} -> refcount={:?}",
+                                nouveau_handle,
+                                n
+                            );
+                            (nouveau_handle, "self-import(nouveau)")
+                        }
+                        None => (
+                            drm::import_dmabuf(dmabuf.phys_addr, dmabuf.size, dmabuf.vmo()),
+                            "generic",
+                        ),
+                    };
+                    if kind == "generic" {
+                        log::error!(
+                            "[drm] PRIME import fd={} phys={:#x} size={} -> generic handle={:#x} (SELF-IMPORT MISS -> GEM_INFO will ENOENT)",
+                            h.fd, dmabuf.phys_addr, dmabuf.size, handle_id
+                        );
+                    } else {
+                        log::debug!(
+                            "[drm] PRIME import fd={} phys={:#x} size={} -> {} handle={:#x}",
+                            h.fd,
+                            dmabuf.phys_addr,
+                            dmabuf.size,
+                            kind,
+                            handle_id
+                        );
+                    }
+                    h.handle = handle_id;
+                    ptr.write(h)?;
+                    Ok(Some(0))
+                }
+            }
+            MODE_CREATE_LEASE => {
+                let mut ptr = UserInOutPtr::<DrmModeCreateLease>::from(arg1);
+                let mut l = ptr.read()?;
+                let lease = file_like.dup();
+                let new_fd = proc.add_file(lease)?;
+                l.lessee_id = 1;
+                l.fd = i32::from(new_fd);
+                ptr.write(l)?;
+                Ok(Some(0))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// `SYNCOBJ_HANDLE_TO_FD` / `SYNCOBJ_FD_TO_HANDLE`
+    fn sys_drm_syncobj_fd(&self, request: usize, arg1: usize) -> Result<Option<usize>, LxError> {
+        use linux_object::fs::SyncobjHandle;
+
+        const SYNCOBJ_HANDLE_TO_FD: usize = 0xC010_64C1; // DRM_IOWR(0xc1, drm_syncobj_handle)
+        const SYNCOBJ_FD_TO_HANDLE: usize = 0xC010_64C2; // DRM_IOWR(0xc2, drm_syncobj_handle)
+        const SYNC_FILE: u32 = 1 << 0;
+
+        if request != SYNCOBJ_HANDLE_TO_FD && request != SYNCOBJ_FD_TO_HANDLE {
+            return Ok(None);
+        }
+        if !kernel_hal::drivers::nouveau_uapi_enabled() {
+            return Ok(None);
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Default)]
+        struct DrmSyncobjHandle {
+            handle: u32,
+            flags: u32,
+            fd: i32,
+            pad: u32,
+        }
+
+        let proc = self.linux_process();
+        let mut ptr = UserInOutPtr::<DrmSyncobjHandle>::from(arg1);
+        let mut h = match ptr.read() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("[drm] SYNCOBJ read(args @ {:#x}) EFAULT: {:?}", arg1, e);
+                return Err(e.into());
+            }
+        };
+
+        let sync_file = h.flags & SYNC_FILE != 0;
+        if request == SYNCOBJ_HANDLE_TO_FD && sync_file {
+            let Some(point) = kernel_hal::drivers::scheme::syncobj::export_snapshot(h.handle)
+            else {
+                warn!(
+                    "[drm] SYNCOBJ_HANDLE_TO_FD(EXPORT_SYNC_FILE) EINVAL: handle={} not a live syncobj",
+                    h.handle
+                );
+                return Err(LxError::EINVAL);
+            };
+            let new_fd = proc.add_file(SyncobjHandle::new_sync_file(h.handle, point))?;
+            h.fd = i32::from(new_fd);
+            if let Err(e) = ptr.write(h) {
+                warn!("[drm] SYNCOBJ export sync_file write-back EFAULT: {:?}", e);
+                return Err(e.into());
+            }
+            return Ok(Some(0));
+        }
+        if request == SYNCOBJ_FD_TO_HANDLE && sync_file {
+            let target = proc.get_file_like(FileDesc::from(h.fd as usize))?;
+            let file = target
+                .downcast_ref::<SyncobjHandle>()
+                .ok_or(LxError::EINVAL)?;
+            let point = match file.sync_file_point {
+                Some(p) => p,
+                None => kernel_hal::drivers::scheme::syncobj::export_snapshot(file.handle)
+                    .ok_or(LxError::EINVAL)?,
+            };
+            if !kernel_hal::drivers::scheme::syncobj::import_snapshot(h.handle, file.handle, point)
+            {
+                warn!(
+                    "[drm] SYNCOBJ_FD_TO_HANDLE(IMPORT_SYNC_FILE) EINVAL: dst handle={} or src handle={} not live",
+                    h.handle, file.handle
+                );
+                return Err(LxError::EINVAL);
+            }
+            return Ok(Some(0));
+        }
+        if request == SYNCOBJ_HANDLE_TO_FD {
+            if kernel_hal::drivers::scheme::syncobj::query(h.handle).is_none() {
+                warn!(
+                    "[drm] SYNCOBJ_HANDLE_TO_FD EINVAL: handle={} not a live syncobj",
+                    h.handle
+                );
+                return Err(LxError::EINVAL);
+            }
+            let file = SyncobjHandle::new(h.handle);
+            let new_fd = match proc.add_file(file) {
+                Ok(fd) => fd,
+                Err(e) => {
+                    warn!("[drm] SYNCOBJ_HANDLE_TO_FD add_file {:?}", e);
+                    return Err(e);
+                }
+            };
+            h.fd = i32::from(new_fd);
+            if let Err(e) = ptr.write(h) {
+                warn!("[drm] SYNCOBJ_HANDLE_TO_FD write-back EFAULT: {:?}", e);
+                return Err(e.into());
+            }
+            Ok(Some(0))
+        } else {
+            let target = match proc.get_file_like(FileDesc::from(h.fd as usize)) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        "[drm] SYNCOBJ_FD_TO_HANDLE EBADF: fd={} not in fd table",
+                        h.fd
+                    );
+                    return Err(e);
+                }
+            };
+            let syncobj = target
+                .downcast_ref::<SyncobjHandle>()
+                .ok_or(LxError::EINVAL)?;
+            if syncobj.sync_file_point.is_some() {
+                warn!(
+                    "[drm] SYNCOBJ_FD_TO_HANDLE EINVAL: fd={} is a sync_file, not a syncobj \
+                     (missing IMPORT_SYNC_FILE flag)",
+                    h.fd
+                );
+                return Err(LxError::EINVAL);
+            }
+            h.handle = syncobj.handle;
+            ptr.write(h)?;
+            Ok(Some(0))
+        }
     }
 
     /// Manipulate a file descriptor.
