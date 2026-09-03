@@ -4,6 +4,8 @@ use crate::{Device, DeviceError, DeviceResult};
 use alloc::{format, sync::Arc, vec::Vec};
 use pci::*;
 
+pub use pci::*;
+
 const PCI_COMMAND: u16 = 0x04;
 const BAR0: u16 = 0x10;
 const PCI_CAP_PTR: u16 = 0x34;
@@ -20,7 +22,7 @@ const PCI_MSI_DATA_64: u16 = 0x0C;
 
 const PCI_CAP_ID_MSI: u8 = 0x05;
 
-struct PortOpsImpl;
+pub struct PortOpsImpl;
 
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
@@ -69,9 +71,9 @@ const E1000_BASE: usize = 0x40000000;
 // riscv64 Qemu
 
 #[cfg(target_arch = "x86_64")]
-const PCI_ACCESS: CSpaceAccessMethod = CSpaceAccessMethod::IO;
+pub const PCI_ACCESS: CSpaceAccessMethod = CSpaceAccessMethod::IO;
 #[cfg(not(target_arch = "x86_64"))]
-const PCI_ACCESS: CSpaceAccessMethod = CSpaceAccessMethod::MemoryMapped(PCI_BASE as *mut u8);
+pub const PCI_ACCESS: CSpaceAccessMethod = CSpaceAccessMethod::MemoryMapped(PCI_BASE as *mut u8);
 
 #[cfg(any(target_arch = "mips", target_arch = "riscv64"))]
 impl PortOps for PortOpsImpl {

@@ -19,6 +19,11 @@ impl Pseudo {
             type_,
         }
     }
+
+    /// create a Pseudo INode with raw bytes
+    pub fn new_bytes(content: Vec<u8>, type_: FileType) -> Self {
+        Pseudo { content, type_ }
+    }
 }
 
 impl INode for Pseudo {
