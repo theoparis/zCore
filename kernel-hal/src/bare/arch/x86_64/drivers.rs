@@ -8,6 +8,12 @@ use zcore_drivers::{Device, DeviceResult};
 use super::trap;
 use crate::drivers;
 
+static AP_IDS: spin::Mutex<alloc::vec::Vec<u8>> = spin::Mutex::new(alloc::vec::Vec::new());
+
+pub fn ap_ids() -> alloc::vec::Vec<u8> {
+    AP_IDS.lock().clone()
+}
+
 pub(super) fn init_early() -> DeviceResult {
     let uart = Arc::new(Uart16550Pmio::new(0x3F8));
     drivers::add_device(Device::Uart(BufferedUart::new(uart)));
@@ -45,7 +51,8 @@ pub(super) fn init() -> DeviceResult {
     Apic::local_apic().set_timer_initial(cycles as u32);
     Apic::local_apic().disable_timer();
 
-    drivers::add_device(Device::Irq(irq));
+    drivers::add_device(Device::Irq(irq.clone()));
+    *AP_IDS.lock() = irq.ap_ids().to_vec();
 
     #[cfg(not(feature = "no-pci"))]
     {

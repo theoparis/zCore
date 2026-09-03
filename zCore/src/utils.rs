@@ -3,7 +3,7 @@ use zircon_object::{object::KernelObject, task::Process};
 
 #[derive(Debug)]
 pub struct BootOptions {
-    #[cfg_attr(feature = "linux", allow(dead_code))]
+    #[allow(dead_code)]
     pub cmdline: String,
     pub log_level: String,
     #[cfg(feature = "linux")]
@@ -65,7 +65,7 @@ pub fn boot_options() -> BootOptions {
     }
 }
 
-#[cfg_attr(all(feature = "linux", feature = "zircon"), allow(dead_code))]
+#[allow(dead_code)]
 fn check_exit_code(proc: Arc<Process>) -> i32 {
     let code = proc.exit_code().unwrap_or(-1);
     if code != 0 {
@@ -118,6 +118,7 @@ pub fn wait_for_exit(proc: Option<Arc<Process>>) -> ! {
 }
 
 #[cfg(not(feature = "libos"))]
+#[allow(dead_code)]
 pub fn wait_for_exit(proc: Option<Arc<Process>>) -> ! {
     kernel_hal::timer::timer_enable();
     info!("executor run!");

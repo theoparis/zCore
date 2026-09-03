@@ -1,5 +1,5 @@
 [workspace]
-resolver = "1"
+resolver = "3"
 members = [
     "drivers",
     "kernel-hal",
@@ -24,5 +24,6 @@ exclude = [
 executor = { path = "vendor/preemptive-scheduler" }
 
 [profile.release]
-lto = true
-debug = true
+lto = "thin"
+strip = true
+debug-assertions = true

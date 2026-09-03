@@ -1,4 +1,7 @@
-﻿use std::fmt::Display;
+﻿use os_xtask_utils::CommandExt;
+pub use rootcause::option_ext::OptionExt;
+pub use rootcause::prelude::*;
+use std::fmt::Display;
 
 #[derive(Debug)]
 pub(crate) enum XError {
@@ -19,3 +22,19 @@ impl Display for XError {
 }
 
 impl std::error::Error for XError {}
+
+pub(crate) trait ExtRunner: CommandExt {
+    fn run(&mut self) -> Result<(), Report> {
+        let info = self.info();
+        let status = self
+            .as_mut()
+            .status()
+            .context(format!("Failed to execute command {:?}", info))?;
+        if !status.success() {
+            bail!("Command failed with code {:?}: {:?}", status.code(), info);
+        }
+        Ok(())
+    }
+}
+
+impl<T: CommandExt> ExtRunner for T {}

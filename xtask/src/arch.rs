@@ -1,11 +1,11 @@
 //! 支持架构的定义。
 
-use crate::{commands::wget, LinuxRootfs, XError, ARCHS, TARGET};
-use os_xtask_utils::{dir, CommandExt, Tar};
+use crate::{commands::wget, errors::*, LinuxRootfs, ARCHS, TARGET};
+use os_xtask_utils::{dir, Tar};
 use std::{path::PathBuf, str::FromStr};
 
 /// 支持的 CPU 架构。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Arch {
     Riscv64,
     X86_64,
@@ -36,7 +36,7 @@ impl Arch {
     }
 
     /// Downloads linux musl toolchain, and returns its path.
-    pub fn linux_musl_cross(&self) -> PathBuf {
+    pub fn linux_musl_cross(&self) -> Result<PathBuf, Report> {
         let name = format!("{}-linux-musl-cross", self.name().to_lowercase());
 
         let origin = self.origin();
@@ -45,16 +45,20 @@ impl Arch {
         let tgz = origin.join(format!("{name}.tgz"));
         let dir = target.join(&name);
 
-        dir::create_parent(&dir).unwrap();
-        dir::rm(&dir).unwrap();
+        if !dir.is_dir() {
+            dir::create_parent(&dir).context(format!("Failed to create parent dir for {dir:?}"))?;
+            let _ = dir::rm(&dir);
 
-        wget(
-            format!("https://github.com/YdrMaster/zCore/releases/download/musl-cache/{name}.tgz"),
-            &tgz,
-        );
-        Tar::xf(&tgz, Some(target)).invoke();
+            wget(
+                format!(
+                    "https://github.com/YdrMaster/zCore/releases/download/musl-cache/{name}.tgz"
+                ),
+                &tgz,
+            )?;
+            Tar::xf(&tgz, Some(&target)).run()?;
+        }
 
-        dir
+        Ok(dir)
     }
 }
 

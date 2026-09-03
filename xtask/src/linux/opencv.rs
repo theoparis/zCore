@@ -1,12 +1,12 @@
 use super::join_path_env;
-use crate::{commands::fetch_online, Arch, REPOS};
+use crate::{commands::fetch_online, errors::*, Arch, REPOS};
 use os_xtask_utils::{dir, CommandExt, Ext, Git, Make};
 use std::{fs, path::Path};
 
 impl super::LinuxRootfs {
-    pub fn put_ffmpeg(&self) {
+    pub fn put_ffmpeg(&self) -> Result<(), Report> {
         // 递归 rootfs
-        let musl = self.put_musl_libs();
+        let musl = self.put_musl_libs()?;
         // 拉 ffmpeg
         let ffmpeg = REPOS.join("ffmpeg");
         if !ffmpeg.is_dir() {
@@ -17,11 +17,11 @@ impl super::LinuxRootfs {
                     .single_branch()
                     .depth(1)
                     .done()
-            });
+            })?;
         }
         // 拷贝到目标路径
         let build = self.0.target().join("ffmpeg");
-        dircpy::copy_dir(ffmpeg, &build).unwrap();
+        dircpy::copy_dir(ffmpeg, &build).context("Failed to copy ffmpeg")?;
         // 构建
         match self.0 {
             Arch::Riscv64 => {
@@ -38,25 +38,31 @@ impl super::LinuxRootfs {
                     .arg("--disable-doc")
                     .arg(format!(
                         "--prefix={}",
-                        build.canonicalize().unwrap().join("install").display(),
+                        build
+                            .canonicalize()
+                            .context("Failed to canonicalize build path")?
+                            .join("install")
+                            .display(),
                     ))
                     .env("PATH", &path_with_musl_gcc)
-                    .invoke();
+                    .run()?;
                 Make::install()
                     .current_dir(&build)
                     .j(num_cpus::get().min(8)) // 不能用太多线程，以免爆内存
                     .env("PATH", path_with_musl_gcc)
-                    .invoke();
+                    .run()?;
             }
-            Arch::X86_64 | Arch::Aarch64 => todo!(),
+            Arch::X86_64 | Arch::Aarch64 => {
+                bail!("put_ffmpeg not supported for {:?}", self.0.name())
+            }
         }
         // 拷贝
-        self.put_libs(musl, build.join("install"));
+        self.put_libs(&musl, build.join("install"))
     }
 
-    pub fn put_opencv(&self) {
+    pub fn put_opencv(&self) -> Result<(), Report> {
         // 递归 rootfs
-        let musl = self.put_musl_libs();
+        let musl = self.put_musl_libs()?;
         // 拉 opencv
         let opencv = REPOS.join("opencv");
         if !opencv.is_dir() {
@@ -66,9 +72,11 @@ impl super::LinuxRootfs {
                     .single_branch()
                     .depth(1)
                     .done()
-            });
+            })?;
         }
-        let source = opencv.canonicalize().unwrap();
+        let source = opencv
+            .canonicalize()
+            .context("Failed to canonicalize opencv path")?;
         let target = self.0.target().join("opencv");
         // 如果 Makefile 未生成，重新执行 cmake
         let cmake_needed = !target.join("Makefile").is_file();
@@ -78,35 +86,46 @@ impl super::LinuxRootfs {
         let path_with_musl_gcc = join_path_env(&[musl.join("bin")]);
         //
         if cmake_needed {
-            dir::clear(&target).unwrap();
+            dir::clear(&target).context("Failed to clear target")?;
             // ffmpeg 路径
             let ffmpeg = self.0.target().join("ffmpeg").join("install").join("lib");
             // 创建平台相关 cmake
             let platform_cmake = self.0.target().join("musl-gcc.toolchain.cmake");
-            fs::write(&platform_cmake, self.opencv_cmake(&ffmpeg)).unwrap();
+            fs::write(&platform_cmake, self.opencv_cmake(&ffmpeg))
+                .context("Failed to write cmake file")?;
             // 执行
             let mut cmake = Ext::new("cmake");
             if ffmpeg.is_dir() {
                 cmake.env(
                     "PKG_CONFIG_LIBDIR",
-                    ffmpeg.join("pkgconfig").canonicalize().unwrap(),
+                    ffmpeg
+                        .join("pkgconfig")
+                        .canonicalize()
+                        .context("Failed to canonicalize pkgconfig")?,
                 );
             }
             cmake
                 .current_dir(&target)
                 .arg(format!(
                     "-DCMAKE_TOOLCHAIN_FILE={}",
-                    platform_cmake.canonicalize().unwrap().display()
+                    platform_cmake
+                        .canonicalize()
+                        .context("Failed to canonicalize platform_cmake")?
+                        .display()
                 ))
                 .arg("-DWITH_FFMPEG=ON")
                 .arg("-DCMAKE_BUILD_TYPE=Release")
                 .arg(format!(
                     "-DCMAKE_INSTALL_PREFIX={}",
-                    target.canonicalize().unwrap().join("install").display(),
+                    target
+                        .canonicalize()
+                        .context("Failed to canonicalize target")?
+                        .join("install")
+                        .display(),
                 ))
                 .arg(source)
                 .env("PATH", &path_with_musl_gcc)
-                .invoke();
+                .run()?;
         }
         //
         if install_needed {
@@ -114,10 +133,10 @@ impl super::LinuxRootfs {
                 .current_dir(&target)
                 .j(num_cpus::get().min(8)) // 不能用太多线程，以免爆内存
                 .env("PATH", path_with_musl_gcc)
-                .invoke();
+                .run()?;
         }
         // 拷贝
-        self.put_libs(musl, target.join("install"));
+        self.put_libs(&musl, target.join("install"))
     }
 
     /// 构造一个用于 opencv 构建的 cmake 文件。

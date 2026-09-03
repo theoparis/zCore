@@ -15,9 +15,10 @@ mod linux;
 use arch::{Arch, ArchArg};
 use build::{GdbArgs, OutArgs, QemuArgs};
 use clap::Parser;
-use errors::XError;
+use errors::*;
 use linux::LinuxRootfs;
 use once_cell::sync::Lazy;
+use os_xtask_utils::CommandExt;
 use std::{
     fs,
     net::Ipv4Addr,
@@ -272,127 +273,126 @@ struct LinuxLibosArg {
     pub args: String,
 }
 
-fn main() {
+fn main() -> Result<(), Report> {
     use Commands::*;
     match Cli::parse().command {
         GitProxy(ProxyPort { port, global }) => {
             if let Some(port) = port {
-                set_git_proxy(global, port);
+                set_git_proxy(global, port)?;
             } else {
-                unset_git_proxy(global);
+                unset_git_proxy(global)?;
             }
         }
         #[cfg(not(target_arch = "riscv64"))]
         Dump => dump::dump_config(),
-        ZirconInit => install_zircon_prebuilt(),
-        UpdateAll => update_all(),
-        CheckStyle => check_style(),
+        ZirconInit => install_zircon_prebuilt()?,
+        UpdateAll => update_all()?,
+        CheckStyle => check_style()?,
 
-        Rootfs(arg) => arg.linux_rootfs().make(true),
+        Rootfs(arg) => arg.linux_rootfs().make(true)?,
         MuslLibs(arg) => {
             // 丢弃返回值
-            arg.linux_rootfs().put_musl_libs();
+            arg.linux_rootfs().put_musl_libs()?;
         }
-        Opencv(arg) => arg.linux_rootfs().put_opencv(),
-        Ffmpeg(arg) => arg.linux_rootfs().put_ffmpeg(),
-        LibcTest(arg) => arg.linux_rootfs().put_libc_test(),
-        OtherTest(arg) => arg.linux_rootfs().put_other_test(),
-        Image(arg) => arg.linux_rootfs().image(),
+        Opencv(arg) => arg.linux_rootfs().put_opencv()?,
+        Ffmpeg(arg) => arg.linux_rootfs().put_ffmpeg()?,
+        LibcTest(arg) => arg.linux_rootfs().put_libc_test()?,
+        OtherTest(arg) => arg.linux_rootfs().put_other_test()?,
+        Image(arg) => arg.linux_rootfs().image()?,
 
-        Asm(args) => args.asm(),
+        Asm(args) => args.asm()?,
         Bin(args) => {
             // 丢弃返回值
-            args.bin();
+            args.bin()?;
         }
-        Qemu(args) => args.qemu(),
-        Gdb(args) => args.gdb(),
+        Qemu(args) => args.qemu()?,
+        Gdb(args) => args.gdb()?,
 
         LibosLibcTest => {
-            libos::rootfs(true);
-            libos::put_libc_test();
+            libos::rootfs(true)?;
+            libos::put_libc_test()?;
         }
-        LinuxLibos(arg) => libos::linux_run(arg.args),
+        LinuxLibos(arg) => libos::linux_run(arg.args)?,
     }
+    Ok(())
 }
 
 /// 更新子项目。
-fn git_submodule_update(init: bool) {
-    use os_xtask_utils::{CommandExt, Git};
-    Git::submodule_update(init).invoke();
+fn git_submodule_update(init: bool) -> Result<(), Report> {
+    use os_xtask_utils::Git;
+    Git::submodule_update(init).run()
 }
 
 /// 下载 zircon 模式所需的测例和库
-fn install_zircon_prebuilt() {
+fn install_zircon_prebuilt() -> Result<(), Report> {
     use commands::wget;
-    use os_xtask_utils::{dir, CommandExt, Tar};
+    use os_xtask_utils::{dir, Tar};
     const URL: &str =
         "https://github.com/rcore-os/zCore/releases/download/prebuilt-2208/prebuilt.tar.xz";
     let tar = Arch::X86_64.origin().join("prebuilt.tar.xz");
-    wget(URL, &tar);
+    wget(URL, &tar)?;
     // 解压到目标路径
     let dir = PROJECT_DIR.join("prebuilt");
     let target = TARGET.join("zircon");
-    dir::rm(&dir).unwrap();
-    dir::rm(&target).unwrap();
-    fs::create_dir_all(&target).unwrap();
-    Tar::xf(&tar, Some(&target)).invoke();
-    dircpy::copy_dir(target.join("prebuilt"), dir).unwrap();
+    let _ = dir::rm(&dir);
+    let _ = dir::rm(&target);
+    fs::create_dir_all(&target).context("Failed to create target dir")?;
+    Tar::xf(&tar, Some(&target)).run()?;
+    dircpy::copy_dir(target.join("prebuilt"), dir).context("Failed to copy prebuilt")?;
+    Ok(())
 }
 
 /// 更新工具链和依赖。
-fn update_all() {
-    use os_xtask_utils::{Cargo, CommandExt, Ext};
-    git_submodule_update(false);
-    Ext::new("rustup").arg("update").invoke();
-    Cargo::update().invoke();
+fn update_all() -> Result<(), Report> {
+    use os_xtask_utils::{Cargo, Ext};
+    git_submodule_update(false)?;
+    Ext::new("rustup").arg("update").run()?;
+    Cargo::update().run()?;
+    Ok(())
 }
 
 /// 设置 git 代理。
-fn set_git_proxy(global: bool, port: u16) {
-    use os_xtask_utils::{CommandExt, Git};
-    let dns = fs::read_to_string("/etc/resolv.conf")
-        .unwrap()
+fn set_git_proxy(global: bool, port: u16) -> Result<(), Report> {
+    use os_xtask_utils::Git;
+    let resolv =
+        fs::read_to_string("/etc/resolv.conf").context("Failed to read /etc/resolv.conf")?;
+    let dns = resolv
         .lines()
         .find_map(|line| {
             line.strip_prefix("nameserver ")
                 .and_then(|s| s.parse::<Ipv4Addr>().ok())
         })
-        .expect("FAILED: detect DNS");
+        .context("FAILED: detect DNS")?;
     let proxy = format!("socks5://{dns}:{port}");
-    Git::config(global).args(["http.proxy", &proxy]).invoke();
-    Git::config(global).args(["https.proxy", &proxy]).invoke();
+    Git::config(global).args(["http.proxy", &proxy]).run()?;
+    Git::config(global).args(["https.proxy", &proxy]).run()?;
     println!("git proxy = {proxy}");
+    Ok(())
 }
 
 /// 移除 git 代理。
-fn unset_git_proxy(global: bool) {
-    use os_xtask_utils::{CommandExt, Git};
-    Git::config(global).args(["--unset", "http.proxy"]).invoke();
-    Git::config(global)
-        .args(["--unset", "https.proxy"])
-        .invoke();
+fn unset_git_proxy(global: bool) -> Result<(), Report> {
+    use os_xtask_utils::Git;
+    Git::config(global).args(["--unset", "http.proxy"]).run()?;
+    Git::config(global).args(["--unset", "https.proxy"]).run()?;
     println!("git proxy =");
+    Ok(())
 }
 
 /// 风格检查。
-fn check_style() {
-    use os_xtask_utils::{Cargo, CommandExt};
+fn check_style() -> Result<(), Report> {
+    use os_xtask_utils::Cargo;
     println!("Check workspace");
-    Cargo::fmt().arg("--all").arg("--").arg("--check").invoke();
-    Cargo::clippy().all_features().invoke();
-    Cargo::doc().all_features().arg("--no-deps").invoke();
+    Cargo::fmt().arg("--all").arg("--").arg("--check").run()?;
+    Cargo::clippy().all_features().run()?;
+    Cargo::doc().all_features().arg("--no-deps").run()?;
 
     println!("Check libos");
-    // println!("    Checks zircon libos");
-    // Cargo::clippy()
-    //     .package("zcore")
-    //     .features(false, &["zircon", "libos"])
-    //     .invoke();
     println!("    Checks linux libos");
     Cargo::clippy()
         .package("zcore")
         .features(false, ["linux", "libos"])
-        .invoke();
+        .run()?;
 
     println!("Check bare-metal");
     for arch in [Arch::Riscv64, Arch::X86_64, Arch::Aarch64] {
@@ -400,49 +400,55 @@ fn check_style() {
         BuildConfig::from_args(BuildArgs {
             machine: format!("virt-{}", arch.name()),
             debug: false,
-        })
-        .invoke(Cargo::clippy);
+            features: None,
+        })?
+        .invoke(Cargo::clippy)?;
     }
+    Ok(())
 }
 
 mod libos {
-    use crate::{arch::Arch, commands::wget, linux::LinuxRootfs, ARCHS, TARGET};
+    use crate::{arch::Arch, commands::wget, errors::*, linux::LinuxRootfs, ARCHS, TARGET};
     use os_xtask_utils::{dir, Cargo, CommandExt, Tar};
     use std::fs;
 
     /// 部署 libos 使用的 rootfs。
-    pub(super) fn rootfs(clear: bool) {
+    pub(super) fn rootfs(clear: bool) -> Result<(), Report> {
         // 下载
         const URL: &str =
             "https://github.com/YdrMaster/zCore/releases/download/musl-cache/rootfs-libos.tar.gz";
         let origin = ARCHS.join("libos").join("rootfs-libos.tar.gz");
-        dir::create_parent(&origin).unwrap();
-        wget(URL, &origin);
+        dir::create_parent(&origin).context("Failed to create parent dir for rootfs-libos")?;
+        wget(URL, &origin)?;
         // 解压
         let target = TARGET.join("libos");
-        fs::create_dir_all(&target).unwrap();
-        Tar::xf(origin.as_os_str(), Some(&target)).invoke();
+        fs::create_dir_all(&target).context("Failed to create target dir for libos")?;
+        Tar::xf(origin.as_os_str(), Some(&target)).run()?;
         // 拷贝
         const ROOTFS: &str = "rootfs/libos";
         if clear {
-            dir::clear(ROOTFS).unwrap();
+            let _ = dir::clear(ROOTFS);
         }
-        dircpy::copy_dir(target.join("rootfs"), ROOTFS).unwrap();
+        dircpy::copy_dir(target.join("rootfs"), ROOTFS)
+            .context("Failed to copy rootfs to rootfs/libos")?;
+        Ok(())
     }
 
     /// 将 x86_64 的 libc-test 复制到 libos。
-    pub(super) fn put_libc_test() {
+    pub(super) fn put_libc_test() -> Result<(), Report> {
         const TARGET: &str = "rootfs/libos/libc-test";
         let x86_64 = LinuxRootfs::new(Arch::X86_64);
-        x86_64.put_libc_test();
-        dir::clear(TARGET).unwrap();
-        dircpy::copy_dir(x86_64.path().join("libc-test"), TARGET).unwrap();
+        x86_64.put_libc_test()?;
+        dir::clear(TARGET).context("Failed to clear libos libc-test dir")?;
+        dircpy::copy_dir(x86_64.path().join("libc-test"), TARGET)
+            .context("Failed to copy libc-test to libos")?;
+        Ok(())
     }
 
     /// libos 模式执行应用程序。
-    pub(super) fn linux_run(args: String) {
+    pub(super) fn linux_run(args: String) -> Result<(), Report> {
         println!("{}", std::env!("OUT_DIR"));
-        rootfs(false);
+        rootfs(false)?;
         // 启动！
         Cargo::run()
             .package("zcore")
@@ -450,6 +456,6 @@ mod libos {
             .features(true, ["linux", "libos"])
             .arg("--")
             .args(args.split_whitespace())
-            .invoke()
+            .run()
     }
 }

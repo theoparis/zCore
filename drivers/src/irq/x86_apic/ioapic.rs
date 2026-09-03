@@ -148,27 +148,36 @@ impl IoApic {
 
 impl IoApicList {
     /// Probe all I/O APICs from the ACPI table represented by `acpi_rsdp`.
-    pub fn new(acpi_rsdp: usize, phys_to_virt: Phys2VirtFn) -> Self {
+    pub fn new(acpi_rsdp: usize, phys_to_virt: Phys2VirtFn) -> (Self, Vec<u8>) {
         let handler = AcpiMapHandler { phys_to_virt };
         // parse ACPI table by the physical address of the RSDP.
         let tables = unsafe { AcpiTables::from_rsdp(handler, acpi_rsdp).unwrap() };
-        let io_apics =
-            if let InterruptModel::Apic(apic) = tables.platform_info().unwrap().interrupt_model {
-                apic.io_apics
-                    .iter()
-                    .map(|i| {
-                        IoApic::new(
-                            i.id,
-                            phys_to_virt(i.address as usize),
-                            i.global_system_interrupt_base,
-                        )
-                    })
-                    .collect()
-            } else {
-                // only legacy i8259 PIC is present
-                Vec::new()
-            };
-        Self { io_apics }
+        let platform_info = tables.platform_info().unwrap();
+        let io_apics = if let InterruptModel::Apic(apic) = &platform_info.interrupt_model {
+            apic.io_apics
+                .iter()
+                .map(|i| {
+                    IoApic::new(
+                        i.id,
+                        phys_to_virt(i.address as usize),
+                        i.global_system_interrupt_base,
+                    )
+                })
+                .collect()
+        } else {
+            // only legacy i8259 PIC is present
+            Vec::new()
+        };
+        let ap_ids = if let Some(proc_info) = platform_info.processor_info {
+            proc_info
+                .application_processors
+                .iter()
+                .map(|p| p.local_apic_id as u8)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (Self { io_apics }, ap_ids)
     }
 
     /// Get the corresponding I/O APIC of the `gsi`, each I/O-APIC have a range

@@ -7,8 +7,10 @@
 
 /ignored
 /rootfs
-# for aarch64 only
 /zCore/disk
+/zCore/esp
 
 .DS_Store
 __pycache__
+
+*.log

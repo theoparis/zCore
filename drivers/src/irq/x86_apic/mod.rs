@@ -19,6 +19,7 @@ type Phys2VirtFn = fn(paddr: PhysAddr) -> VirtAddr;
 /// Advanced Programmable Interrupt Controller
 pub struct Apic {
     ioapic_list: IoApicList,
+    ap_ids: alloc::vec::Vec<u8>,
     manager_ioapic: Mutex<IrqManager<256>>,
     manager_lapic: Mutex<IrqManager<16>>,
 }
@@ -26,11 +27,17 @@ pub struct Apic {
 impl Apic {
     /// Construct a new `Apic`.
     pub fn new(acpi_rsdp: usize, phys_to_virt: Phys2VirtFn) -> Self {
+        let (ioapic_list, ap_ids) = IoApicList::new(acpi_rsdp, phys_to_virt);
         Self {
-            ioapic_list: IoApicList::new(acpi_rsdp, phys_to_virt),
+            ioapic_list,
+            ap_ids,
             manager_ioapic: Mutex::new(IrqManager::new(IOAPIC_IRQ_RANGE)),
             manager_lapic: Mutex::new(IrqManager::new(LAPIC_IRQ_RANGE)),
         }
+    }
+
+    pub fn ap_ids(&self) -> &[u8] {
+        &self.ap_ids
     }
 
     fn with_ioapic<F>(&self, gsi: u32, op: F) -> DeviceResult
