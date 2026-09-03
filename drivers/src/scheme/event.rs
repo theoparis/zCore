@@ -7,8 +7,12 @@ pub trait EventScheme {
     fn trigger(&self, event: Self::Event);
 
     /// Subscribe events, call the `handler` when an input event occurs.
-    /// If `once` is ture, unsubscribe automatically after handling.
-    fn subscribe(&self, handler: EventHandler<Self::Event>, once: bool);
+    /// If `once` is true, unsubscribe automatically after handling.
+    /// Returns a subscription id for [`Self::unsubscribe`].
+    fn subscribe(&self, handler: EventHandler<Self::Event>, once: bool) -> Option<u64>;
+
+    /// Drop a parked waker subscription.
+    fn unsubscribe(&self, id: u64);
 }
 
 macro_rules! impl_event_scheme {
@@ -55,8 +59,13 @@ macro_rules! impl_event_scheme {
         }
 
         #[inline]
-        fn subscribe(&self, handler: $crate::utils::EventHandler<Self::Event>, once: bool) {
-            self.listener.subscribe(handler, once);
+        fn subscribe(&self, handler: $crate::utils::EventHandler<Self::Event>, once: bool) -> Option<u64> {
+            self.listener.subscribe(handler, once)
+        }
+
+        #[inline]
+        fn unsubscribe(&self, id: u64) {
+            self.listener.unsubscribe(id);
         }
     };
 }
