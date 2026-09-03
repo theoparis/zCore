@@ -54,8 +54,8 @@ impl LinuxRootfs {
         Ext::new(self.strip(&musl)).arg("-s").arg(&to).run()?;
         // 为常用功能建立符号链接
         const SH: &[&str] = &[
-            "cat", "cp", "echo", "false", "grep", "gzip", "kill", "ln", "ls", "mkdir", "mv",
-            "pidof", "ping", "ping6", "printenv", "ps", "pwd", "rm", "rmdir", "sh", "sleep",
+            "cat", "cp", "echo", "false", "grep", "gzip", "kill", "ln", "ls", "lspci", "mkdir",
+            "mv", "pidof", "ping", "ping6", "printenv", "ps", "pwd", "rm", "rmdir", "sh", "sleep",
             "stat", "tar", "touch", "true", "uname", "usleep", "watch",
         ];
         let bin = dir.join("bin");
