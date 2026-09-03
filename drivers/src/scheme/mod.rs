@@ -7,6 +7,8 @@
 
 pub(super) mod block;
 pub(super) mod display;
+pub mod drm;
+pub mod gem_mmap;
 pub(super) mod input;
 pub(super) mod irq;
 pub(super) mod net;
@@ -20,6 +22,7 @@ use alloc::sync::Arc;
 
 pub use block::BlockScheme;
 pub use display::DisplayScheme;
+pub use drm::DrmScheme;
 pub use event::EventScheme;
 pub use input::InputScheme;
 pub use irq::IrqScheme;

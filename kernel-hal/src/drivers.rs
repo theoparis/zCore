@@ -6,7 +6,7 @@ use core::convert::From;
 use crate::sync::{RwLock, RwLockReadGuard};
 
 use zcore_drivers::scheme::{
-    BlockScheme, DisplayScheme, InputScheme, IrqScheme, NetScheme, Scheme, UartScheme,
+    BlockScheme, DisplayScheme, DrmScheme, InputScheme, IrqScheme, NetScheme, Scheme, UartScheme,
 };
 use zcore_drivers::{Device, DeviceError};
 
@@ -66,6 +66,7 @@ struct AllDeviceList {
     irq: DeviceList<dyn IrqScheme>,
     net: DeviceList<dyn NetScheme>,
     uart: DeviceList<dyn UartScheme>,
+    drm: DeviceList<dyn DrmScheme>,
 }
 
 impl AllDeviceList {
@@ -77,6 +78,7 @@ impl AllDeviceList {
             Device::Irq(d) => self.irq.add(d),
             Device::Net(d) => self.net.add(d),
             Device::Uart(d) => self.uart.add(d),
+            Device::Drm(d) => self.drm.add(d),
         }
     }
 }
@@ -117,6 +119,38 @@ pub fn all_net() -> &'static DeviceList<dyn NetScheme> {
 /// Returns all devices which implement the [`UartScheme`].
 pub fn all_uart() -> &'static DeviceList<dyn UartScheme> {
     &DEVICES.uart
+}
+
+/// Returns all devices which implement the [`DrmScheme`].
+pub fn all_drm() -> &'static DeviceList<dyn DrmScheme> {
+    &DEVICES.drm
+}
+
+/// Enables the nouveau-compatible driver-specific ioctl surface on the
+/// NVIDIA DRM driver.
+#[cfg(target_arch = "x86_64")]
+pub fn set_nouveau_uapi_enabled(v: bool) {
+    zcore_drivers::display::set_nouveau_uapi_enabled(v);
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn set_nouveau_uapi_enabled(_v: bool) {}
+
+/// Hands the NVIDIA RM a provider of real per-thread identity.
+#[cfg(target_arch = "x86_64")]
+pub fn set_rm_thread_id_provider(f: fn() -> u64) {
+    zcore_drivers::display::set_rm_thread_id_provider(f);
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn set_rm_thread_id_provider(_f: fn() -> u64) {}
+
+/// Whether the nouveau-compatible ioctl surface is currently enabled.
+#[cfg(target_arch = "x86_64")]
+pub fn nouveau_uapi_enabled() -> bool {
+    zcore_drivers::display::nouveau_uapi_enabled()
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn nouveau_uapi_enabled() -> bool {
+    false
 }
 
 impl From<DeviceError> for crate::HalError {
@@ -187,9 +221,76 @@ mod drivers_ffi {
         vaddr - KCONFIG.phys_to_virt_offset
     }
 
+    #[unsafe(no_mangle)]
+    extern "C" fn drivers_dma_mark_uncached(paddr: PhysAddr, pages: usize) -> i32 {
+        use crate::hal_fn::vm::flush_tlb;
+        use crate::vm::{GenericPageTable, PageTable};
+        use crate::{CachePolicy, MMUFlags, PAGE_SIZE};
+
+        if paddr == 0 || pages == 0 {
+            return -1;
+        }
+        let vaddr = paddr + KCONFIG.phys_to_virt_offset;
+        let flags = MMUFlags::READ
+            | MMUFlags::WRITE
+            | MMUFlags::DEVICE
+            | MMUFlags::from_bits_truncate(CachePolicy::UncachedDevice as usize);
+        let mut pt = PageTable::from_current();
+        for i in 0..pages {
+            let va = vaddr + i * PAGE_SIZE;
+            match pt.query(va) {
+                Ok((_, _, size)) => {
+                    if size as usize != PAGE_SIZE {
+                        return -1;
+                    }
+                    if let Err(_) = pt.update(va, None, Some(flags)) {
+                        return -1;
+                    }
+                }
+                Err(_) => {
+                    if let Err(_) = pt.map_cont(va, PAGE_SIZE, paddr + i * PAGE_SIZE, flags) {
+                        return -1;
+                    }
+                }
+            }
+        }
+        flush_tlb(None);
+        core::mem::forget(pt);
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn drivers_dma_verify_uncached(paddr: PhysAddr, pages: usize) -> i32 {
+        use crate::vm::{GenericPageTable, PageTable};
+        use crate::{CachePolicy, PAGE_SIZE};
+
+        if paddr == 0 || pages == 0 {
+            return -1;
+        }
+        let vaddr = paddr + KCONFIG.phys_to_virt_offset;
+        let pt = PageTable::from_current();
+        for i in 0..pages {
+            let va = vaddr + i * PAGE_SIZE;
+            let Ok((_, flags, _)) = pt.query(va) else {
+                return -1;
+            };
+            let policy = flags.bits() & 3;
+            if policy != CachePolicy::Uncached as usize
+                && policy != CachePolicy::UncachedDevice as usize
+            {
+                return -1;
+            }
+        }
+        core::mem::forget(pt);
+        0
+    }
+
     use crate::hal_fn::timer::timer_now;
     #[unsafe(no_mangle)]
     extern "C" fn drivers_timer_now_as_micros() -> u64 {
         timer_now().as_micros() as _
     }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn drivers_klog_emit(_priority: u8, _msg: *const u8, _len: usize) {}
 }
