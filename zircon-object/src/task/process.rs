@@ -52,6 +52,13 @@ use crate::{signal::Futex, vm::VmAddressRegion, ZxError, ZxResult};
 /// [`Process::create()`]: Process::create
 /// [`Process::start()`]: Process::start
 /// [`Process::exit()`]: Process::exit
+static PROCESS_EXIT_HOOK: Mutex<Option<fn(u64)>> = Mutex::new(None);
+
+/// Register a global hook called on process exit with the process ID.
+pub fn set_process_exit_hook(hook: fn(u64)) {
+    *PROCESS_EXIT_HOOK.lock() = Some(hook);
+}
+
 #[allow(dead_code)]
 pub struct Process {
     base: KObjectBase,
@@ -227,6 +234,10 @@ impl Process {
         self.base.signal_set(Signal::PROCESS_TERMINATED);
         self.exceptionate.shutdown();
         self.debug_exceptionate.shutdown();
+
+        if let Some(hook) = *PROCESS_EXIT_HOOK.lock() {
+            hook(self.base.id);
+        }
 
         self.job.remove_process(self.base.id);
         // If we are critical to a job, we need to take action.

@@ -67,6 +67,7 @@ pub(super) fn init() -> DeviceResult {
         let display = Arc::new(UefiDisplay::new(DisplayInfo {
             width: width as _,
             height: height as _,
+            pitch: (width * 4) as _,
             format: ColorFormat::ARGB8888, // uefi::proto::console::gop::PixelFormat::Bgr
             fb_base_vaddr: crate::mem::phys_to_virt(KCONFIG.fb_addr as usize),
             fb_size: KCONFIG.fb_size as usize,

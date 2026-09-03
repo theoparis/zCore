@@ -24,6 +24,7 @@ impl<'a> VirtIoGpu<'a> {
         let info = DisplayInfo {
             width,
             height,
+            pitch: width * 4,
             format: ColorFormat::ARGB8888,
             fb_base_vaddr,
             fb_size,

@@ -109,6 +109,61 @@ pub async fn console_read(buf: &mut [u8]) -> usize {
     super::future::SerialReadFuture::new(buf).await
 }
 
+pub const LOG_ERR: u8 = 3;
+pub const LOG_WARNING: u8 = 4;
+pub const LOG_INFO: u8 = 6;
+
+pub fn klog_emit(_priority: u8, msg: &str) {
+    serial_write_str(msg);
+}
+
+pub const KD_TEXT: u32 = 0x00;
+pub const KD_GRAPHICS: u32 = 0x01;
+
+static KD_MODE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(KD_TEXT);
+
+pub fn set_kd_mode(mode: u32) {
+    KD_MODE.store(mode, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn kd_mode() -> u32 {
+    KD_MODE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn active_vt() -> usize {
+    0
+}
+
+#[macro_export]
+macro_rules! klog_info {
+    ($($arg:tt)*) => {
+        $crate::console::klog_emit(
+            $crate::console::LOG_INFO,
+            &alloc::format!($($arg)*),
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! klog_warn {
+    ($($arg:tt)*) => {
+        $crate::console::klog_emit(
+            $crate::console::LOG_WARNING,
+            &alloc::format!($($arg)*),
+        )
+    };
+}
+
+#[macro_export]
+macro_rules! klog_err {
+    ($($arg:tt)*) => {
+        $crate::console::klog_emit(
+            $crate::console::LOG_ERR,
+            &alloc::format!($($arg)*),
+        )
+    };
+}
+
 /// The POSIX `winsize` structure.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
