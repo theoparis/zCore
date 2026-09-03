@@ -24,6 +24,74 @@ const PCI_CAP_ID_MSI: u8 = 0x05;
 
 pub struct PortOpsImpl;
 
+/// Read a BAR's physical base address directly from PCI config space.
+/// Handles both 32-bit and 64-bit memory BARs without probing (no side effects).
+pub unsafe fn read_bar_addr(
+    ops: &PortOpsImpl,
+    am: CSpaceAccessMethod,
+    loc: Location,
+    bar_reg: u16,
+) -> u64 {
+    let lo = am.read32(ops, loc, bar_reg);
+    if lo == 0 {
+        return 0;
+    }
+    if (lo & 0x1) != 0 {
+        // I/O space BAR
+        (lo & !0x3u32) as u64
+    } else if (lo & 0x6) == 0x4 {
+        // 64-bit memory BAR: combine with the next 32 bits
+        let hi = am.read32(ops, loc, bar_reg + 4);
+        ((lo & !0xFu32) as u64) | ((hi as u64) << 32)
+    } else {
+        // 32-bit memory BAR
+        (lo & !0xFu32) as u64
+    }
+}
+
+/// Probe the size of a BAR by writing all-ones and reading back.
+pub unsafe fn probe_bar_size(
+    ops: &PortOpsImpl,
+    am: CSpaceAccessMethod,
+    loc: Location,
+    bar_reg: u16,
+) -> u64 {
+    let orig_cmd = am.read16(ops, loc, PCI_COMMAND);
+    am.write16(ops, loc, PCI_COMMAND, orig_cmd & !0x03u16);
+
+    let orig_lo = am.read32(ops, loc, bar_reg);
+    am.write32(ops, loc, bar_reg, 0xFFFF_FFFF);
+    let mask_lo = am.read32(ops, loc, bar_reg);
+    am.write32(ops, loc, bar_reg, orig_lo);
+
+    let size = if (orig_lo & 0x1) != 0 {
+        let s = !(mask_lo & !0x3u32).wrapping_add(1);
+        s as u64 & 0xFFFF_FFFF
+    } else if (orig_lo & 0x6) == 0x4 {
+        let orig_hi = am.read32(ops, loc, bar_reg + 4);
+        am.write32(ops, loc, bar_reg + 4, 0xFFFF_FFFF);
+        let mask_hi = am.read32(ops, loc, bar_reg + 4);
+        am.write32(ops, loc, bar_reg + 4, orig_hi);
+        let full_mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
+        let sz_mask = full_mask & !0xFu64;
+        if sz_mask == 0 {
+            0
+        } else {
+            (!sz_mask).wrapping_add(1)
+        }
+    } else {
+        let sz_mask = mask_lo & !0xFu32;
+        if sz_mask == 0 {
+            0
+        } else {
+            (!(sz_mask)).wrapping_add(1) as u64 & 0xFFFF_FFFF
+        }
+    };
+
+    am.write16(ops, loc, PCI_COMMAND, orig_cmd);
+    size
+}
+
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 

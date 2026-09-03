@@ -26,6 +26,7 @@ pub mod virtio;
 pub mod builder;
 pub mod bus;
 pub mod display;
+pub mod gpu;
 pub mod input;
 pub mod io;
 pub mod irq;
