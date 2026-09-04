@@ -132,7 +132,6 @@ else
   	ifeq ($(PLATFORM), apple)
   	  features += board-apple page-16k
   	endif
-  endif
 endif
 
 ifeq ($(MOCK), 1)

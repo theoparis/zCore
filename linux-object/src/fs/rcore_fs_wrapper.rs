@@ -65,3 +65,47 @@ impl BlockDevice for Block {
         self.0.flush().map_err(|_| DevError)
     }
 }
+
+/// A partition slice of a [`BlockScheme`] starting at a given LBA offset.
+pub struct PartitionBlock {
+    inner: Arc<dyn BlockScheme>,
+    start_lba: usize,
+    block_count: usize,
+}
+
+impl PartitionBlock {
+    /// Create a [`PartitionBlock`] with the given start LBA and block count.
+    pub fn new(inner: Arc<dyn BlockScheme>, start_lba: usize, block_count: usize) -> Self {
+        Self {
+            inner,
+            start_lba,
+            block_count,
+        }
+    }
+}
+
+impl BlockDevice for PartitionBlock {
+    const BLOCK_SIZE_LOG2: u8 = 9; // 512 bytes
+
+    fn read_at(&self, block_id: usize, buf: &mut [u8]) -> Result<()> {
+        if self.block_count > 0 && block_id >= self.block_count {
+            return Err(DevError);
+        }
+        self.inner
+            .read_block(self.start_lba + block_id, buf)
+            .map_err(|_| DevError)
+    }
+
+    fn write_at(&self, block_id: usize, buf: &[u8]) -> Result<()> {
+        if self.block_count > 0 && block_id >= self.block_count {
+            return Err(DevError);
+        }
+        self.inner
+            .write_block(self.start_lba + block_id, buf)
+            .map_err(|_| DevError)
+    }
+
+    fn sync(&self) -> Result<()> {
+        self.inner.flush().map_err(|_| DevError)
+    }
+}
