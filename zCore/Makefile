@@ -129,6 +129,9 @@ else
     endif
   else ifeq ($(ARCH), aarch64)
 	features += link-user-img
+  	ifeq ($(PLATFORM), apple)
+  	  features += board-apple page-16k
+  	endif
   endif
 endif
 

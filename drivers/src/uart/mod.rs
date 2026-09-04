@@ -11,10 +11,13 @@ pub use uart_16550::Uart16550Pmio;
 
 #[cfg(target_arch = "aarch64")]
 mod uart_pl011;
+#[cfg(target_arch = "aarch64")]
+mod uart_s5l;
 
 #[cfg(target_arch = "aarch64")]
 pub use uart_pl011::Pl011Uart;
-
+#[cfg(target_arch = "aarch64")]
+pub use uart_s5l::AppleS5lUart;
 #[cfg(feature = "allwinner")]
 mod uart_allwinner;
 

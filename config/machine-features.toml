@@ -7,6 +7,13 @@ arch = "aarch64"
 [qemu.virt-x86_64]
 arch = "x86_64"
 
+# Apple Silicon (M2 Pro / T6020) booted by m1n1. Apple cores boot with a 16K
+# translation granule; 4K stage-1 tables are not usable here.
+[apple.m2pro]
+arch = "aarch64"
+pci-support = false
+features = ["board-apple", "page-16k"]
+
 [allwinner.nezha]
 arch = "riscv64"
 link-user-img = "zCore/riscv64.img"

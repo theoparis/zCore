@@ -48,6 +48,8 @@ pub(crate) use config_common::KCONFIG;
 pub(crate) use kernel_handler::KHANDLER;
 
 pub use common::{addr, console, context, defs::*, ipi::*, user};
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
+pub use config_common::AppleMmio;
 pub use config_common::KernelConfig;
 pub use imp::{
     boot::{primary_init, primary_init_early, secondary_init},
