@@ -141,15 +141,14 @@ impl TrapReason {
                 Syndrome::PCAlignmentFault | Syndrome::SpAlignmentFault => Self::UnalignedAccess,
                 _ => Self::GernelFault(esr as usize),
             },
-            Kind::Irq => Self::Interrupt(
+            // Apple cores deliver every interrupt, including the generic timer,
+            // as an FIQ rather than an IRQ. Treating FIQ as an unsupported trap
+            // makes the kernel kill whichever user thread happened to be running
+            // when the timer fired.
+            Kind::Irq | Kind::Fiq => Self::Interrupt(
                 #[cfg(not(feature = "libos"))]
                 {
-                    use crate::hal_fn::mem::phys_to_virt;
-                    use crate::KCONFIG;
-                    zcore_drivers::irq::gic_400::get_irq_num(
-                        phys_to_virt(KCONFIG.gic_base + 0x1_0000),
-                        phys_to_virt(KCONFIG.gic_base),
-                    )
+                    crate::arch::trap::pending_irq()
                 },
                 #[cfg(feature = "libos")]
                 {

@@ -14,6 +14,7 @@ pub fn timer_now() -> Duration {
 
 pub fn set_next_trigger() {
     CNTP_TVAL_EL0.set(CNTFRQ_EL0.get() / TICKS_PER_SEC);
+    crate::timer::timer_tick();
 }
 
 pub fn init() {
