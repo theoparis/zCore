@@ -3,6 +3,7 @@ pub mod cpu;
 pub mod drivers;
 pub mod interrupt;
 pub mod mem;
+pub mod pmgr;
 pub mod timer;
 pub mod trap;
 pub mod vm;
