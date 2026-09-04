@@ -69,6 +69,11 @@ pub struct Stdout;
 
 impl INode for Stdin {
     fn read_at(&self, _offset: usize, buf: &mut [u8]) -> Result<usize> {
+        if let Some(uart) = kernel_hal::drivers::all_uart().first() {
+            while let Some(c) = uart.try_recv().unwrap_or(None) {
+                self.push(c as char);
+            }
+        }
         if self.can_read() {
             buf[0] = self.pop() as u8;
             Ok(1)
@@ -80,6 +85,11 @@ impl INode for Stdin {
         unimplemented!()
     }
     fn poll(&self) -> Result<PollStatus> {
+        if let Some(uart) = kernel_hal::drivers::all_uart().first() {
+            while let Some(c) = uart.try_recv().unwrap_or(None) {
+                self.push(c as char);
+            }
+        }
         Ok(PollStatus {
             read: self.can_read(),
             write: false,
@@ -98,6 +108,11 @@ impl INode for Stdin {
             type Output = Result<PollStatus>;
 
             fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+                if let Some(uart) = kernel_hal::drivers::all_uart().first() {
+                    while let Some(c) = uart.try_recv().unwrap_or(None) {
+                        self.stdin.push(c as char);
+                    }
+                }
                 if self.stdin.can_read() {
                     return Poll::Ready(self.stdin.poll());
                 }

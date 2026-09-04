@@ -25,6 +25,8 @@ const PAGE_BITS: usize = kernel_hal::PAGE_SIZE_LOG2;
 
 #[repr(align(65536))]
 struct Memory([u8; 2 * 1024 * 1024]);
+
+#[link_section = ".data.memory"]
 static mut MEMORY: Memory = Memory([0u8; 2 * 1024 * 1024]);
 
 unsafe impl GlobalAlloc for LockedHeap {
@@ -50,7 +52,6 @@ pub fn init() {
     unsafe {
         let start = core::ptr::addr_of_mut!(MEMORY.0).cast::<u8>();
         let len = core::mem::size_of::<Memory>();
-        log::info!("MEMORY = {:#?}", start..start.add(len));
         let mut heap = HEAP.0.lock();
         let ptr = NonNull::new_unchecked(start);
         heap.init(core::mem::size_of::<usize>().trailing_zeros() as _, ptr);
@@ -67,7 +68,7 @@ pub fn insert_regions(regions: &[Range<PhysAddr>]) {
         .filter(|region| !region.is_empty())
         .for_each(|region| unsafe {
             heap.transfer(
-                NonNull::new_unchecked((region.start + offset) as *mut u8),
+                NonNull::new_unchecked((region.start.wrapping_add(offset)) as *mut u8),
                 region.len(),
             );
         });
@@ -82,12 +83,14 @@ pub fn frame_alloc(frame_count: usize, align_log2: usize) -> Option<PhysAddr> {
         })
         .ok()?;
     assert_eq!(size, frame_count << PAGE_BITS);
-    Some(ptr.as_ptr() as PhysAddr - phys_to_virt_offset())
+    let vaddr = ptr.as_ptr() as usize;
+    Some(vaddr.wrapping_sub(phys_to_virt_offset()))
 }
 
-pub fn frame_dealloc(target: PhysAddr) {
+pub fn frame_dealloc(paddr: PhysAddr) {
+    let vaddr = paddr.wrapping_add(phys_to_virt_offset());
     HEAP.0.lock().deallocate(
-        unsafe { NonNull::new_unchecked((target + phys_to_virt_offset()) as *mut u8) },
+        unsafe { NonNull::new_unchecked(vaddr as *mut u8) },
         1 << PAGE_BITS,
     );
 }

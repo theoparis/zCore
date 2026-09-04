@@ -16,3 +16,6 @@ cfg_if! {
 
 #[allow(unused_imports)]
 pub use arch::consts::*;
+
+#[cfg(all(feature = "board-apple", not(feature = "libos")))]
+pub use arch::entry::early_print;

@@ -108,6 +108,10 @@ else
   else ifeq ($(ARCH), aarch64)
   	ifeq ($(PLATFORM), raspi4b)
   	  features += link-user-img
+  	else ifeq ($(PLATFORM), apple)
+  	  # Apple Silicon (M1/M2/...) cores boot with a 16K translation granule
+  	  # under m1n1; 4K stage-1 page tables are not usable here.
+  	  features += board-apple page-16k
   	endif
   endif
 endif

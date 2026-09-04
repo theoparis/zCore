@@ -36,15 +36,33 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(all(not(any(feature = "libos")), feature = "mock-disk"))]
 static MOCK_CORE: AtomicBool = AtomicBool::new(false);
 
+/// Reports boot progress over the raw m1n1 VUART. `println!`/`info!` only work
+/// once `primary_init_early` has registered a UART driver, so early stages are
+/// otherwise invisible.
+#[cfg(all(feature = "board-apple", not(feature = "libos")))]
+fn stage(msg: &str) {
+    platform::early_print(msg);
+}
+
+#[cfg(not(all(feature = "board-apple", not(feature = "libos"))))]
+fn stage(_msg: &str) {}
+
 fn primary_main(config: kernel_hal::KernelConfig) {
+    stage("HVLOG: stage: logging\n");
     logging::init();
+    stage("HVLOG: stage: memory\n");
     memory::init();
+    stage("HVLOG: stage: primary_init_early\n");
     kernel_hal::primary_init_early(config, &handler::ZcoreKernelHandler);
+    stage("HVLOG: stage: boot_options\n");
     let options = utils::boot_options();
     logging::set_max_level(&options.log_level);
     info!("Boot options: {:#?}", options);
+    stage("HVLOG: stage: insert_regions\n");
     memory::insert_regions(&kernel_hal::mem::free_pmem_regions());
+    stage("HVLOG: stage: primary_init\n");
     kernel_hal::primary_init();
+    stage("HVLOG: stage: run root proc\n");
     STARTED.store(true, Ordering::SeqCst);
     cfg_if! {
         if #[cfg(all(feature = "linux", feature = "zircon"))] {

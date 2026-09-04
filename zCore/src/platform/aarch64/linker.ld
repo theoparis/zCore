@@ -22,8 +22,12 @@ SECTIONS
         erodata = .;
     }
 
+    /* `.data.memory` holds the initial kernel heap. It must live in a loaded
+     * (file-backed) section so that the flat `zcore.bin` handed to m1n1
+     * contains it: m1n1 only maps the bytes it loads. */
     .data : {
         sdata = .;
+        *(.data.memory)
         *(.data .data.*)
         *(.sdata .sdata.*)
         . = ALIGN(64K);
@@ -44,6 +48,7 @@ SECTIONS
     }
 
     ekernel = .;
+    _kernel_size = ekernel - skernel;
 
     /DISCARD/ : {
         *(.eh_frame) *(.eh_frame_hdr)

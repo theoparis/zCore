@@ -80,23 +80,87 @@ fn init_kernel_page_table() -> PagingResult<PageTable> {
         phys_to_virt(KCONFIG.uart_base) + UART_SIZE,
         MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
     )?;
-    // gic
-    map_range(
-        phys_to_virt(KCONFIG.gic_base + 0x1_0000),
-        phys_to_virt(KCONFIG.gic_base + 0x1_0000) + GICC_SIZE,
-        MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
-    )?;
-    map_range(
-        phys_to_virt(KCONFIG.gic_base),
-        phys_to_virt(KCONFIG.gic_base) + GICD_SIZE,
-        MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
-    )?;
-    // virtio_drivers
-    map_range(
-        phys_to_virt(VIRTIO_BASE),
-        phys_to_virt(VIRTIO_BASE) + VIRTIO_SIZE,
-        MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
-    )?;
+    // gic or aic
+    let is_apple =
+        KCONFIG.firmware_type.contains("Apple") || KCONFIG.firmware_type.contains("Asahi");
+    if is_apple {
+        // Prefer the windows iBoot's ADT describes; fall back to the
+        // compiled-in T6020 defaults when it was unreadable.
+        let adt = &KCONFIG.apple;
+        let mut map_dev = |base: usize, size: usize| -> PagingResult {
+            if base == 0 || size == 0 {
+                return Ok(());
+            }
+            map_range(
+                phys_to_virt(base),
+                phys_to_virt(base) + size,
+                MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
+            )
+        };
+
+        // AIC core registers plus its event window.
+        if adt.aic_base != 0 {
+            map_dev(
+                adt.aic_base,
+                adt.aic_size.max(adt.aic_event_offset + 0x4000),
+            )?;
+        } else if KCONFIG.gic_base != 0 {
+            map_dev(KCONFIG.gic_base, 0x1_0000)?;
+        }
+        map_dev(
+            if adt.pmgr_base != 0 {
+                adt.pmgr_base
+            } else {
+                APPLE_PMGR_BASE
+            },
+            APPLE_PMGR_SIZE,
+        )?;
+        if adt.nvme_base != 0 {
+            map_dev(adt.nvme_base, adt.nvme_size.max(APPLE_NVME_SIZE))?;
+            // ASC window + mailbox spans at least 0x1_0000 (64 KB)
+            map_dev(adt.ans_base, adt.ans_size.max(0x1_0000))?;
+            map_dev(adt.sart_base, adt.sart_size.max(APPLE_SART_SIZE))?;
+        } else {
+            map_dev(APPLE_NVME_BASE, APPLE_NVME_SIZE)?;
+            map_dev(APPLE_ANS_BASE, 0x1_0000)?;
+            map_dev(APPLE_ANS_MBOX_BASE, APPLE_ANS_MBOX_SIZE)?;
+            map_dev(APPLE_SART_BASE, APPLE_SART_SIZE)?;
+        }
+        // Boot framebuffer, already painted by iBoot/m1n1's DCP. Mapped
+        // Normal (cacheable) like ordinary RAM, not Device: it is a system
+        // RAM carveout the display co-processor scans out of, not an MMIO
+        // register window, and CPU writes need to actually reach it fast.
+        if adt.fb_base != 0 {
+            let fb_size = adt
+                .fb_stride
+                .saturating_mul(adt.fb_height)
+                .max(crate::PAGE_SIZE);
+            map_range(
+                phys_to_virt(adt.fb_base),
+                phys_to_virt(adt.fb_base) + fb_size,
+                MMUFlags::READ | MMUFlags::WRITE,
+            )?;
+        }
+    } else {
+        if KCONFIG.gic_base != 0 {
+            map_range(
+                phys_to_virt(KCONFIG.gic_base + 0x1_0000),
+                phys_to_virt(KCONFIG.gic_base + 0x1_0000) + GICC_SIZE,
+                MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
+            )?;
+            map_range(
+                phys_to_virt(KCONFIG.gic_base),
+                phys_to_virt(KCONFIG.gic_base) + GICD_SIZE,
+                MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
+            )?;
+        }
+        // virtio_drivers
+        map_range(
+            phys_to_virt(VIRTIO_BASE),
+            phys_to_virt(VIRTIO_BASE) + VIRTIO_SIZE,
+            MMUFlags::READ | MMUFlags::WRITE | MMUFlags::DEVICE,
+        )?;
+    }
     // physical frames
     for r in crate::mem::free_pmem_regions() {
         map_range(
@@ -336,6 +400,12 @@ impl From<MMUFlags> for PTF {
         }
         if f.contains(MMUFlags::READ) {
             flags |= PTF::VALID;
+        }
+        // Match early-boot Device descriptors (`DESC_PAGE_DEVICE` = 0x703):
+        // Inner Shareable. Non-shareable Device walks have produced L2C
+        // ACCESS_FAULT SErrors on T6020 mailbox FIFOs.
+        if f.contains(MMUFlags::DEVICE) {
+            flags |= PTF::INNER | PTF::SHAREABLE;
         }
         if !f.contains(MMUFlags::WRITE) {
             flags |= PTF::AP_RO;

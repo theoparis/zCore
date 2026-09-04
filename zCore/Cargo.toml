@@ -62,6 +62,8 @@ board-d1 = ["link-user-img", "no-pci", "kernel-hal/allwinner-drivers"]
 board-c910light = ["link-user-img", "kernel-hal/board-c910light", "no-pci"]
 # Run on u740
 board-fu740 = ["link-user-img", "kernel-hal/fu740-drivers"]
+# Apple Silicon (M1/M2) booted by m1n1 via the Linux arm64 boot protocol
+board-apple = []
 
 # Use memory and ipi to simulate block device
 mock-disk = ["linux-object/mock-disk"]
@@ -98,6 +100,7 @@ sbi-rt = { version = "0.0.2", features = ["legacy"] }
 # Bare-metal mode on aarch64
 [target.'cfg(all(target_os = "none", target_arch = "aarch64"))'.dependencies]
 rboot = { path = "../rboot", default-features = false }
+dtb-walker = "=0.2.0-alpha.3"
 
 # Bare-metal mode on x86_64
 [target.'cfg(all(target_os = "none", target_arch = "x86_64"))'.dependencies]
